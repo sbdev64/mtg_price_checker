@@ -148,36 +148,20 @@ def get_top_price(prices):
     price_list.sort()
     return price_list[0]
 
-def save_to_file(output_text, default_filename, cards):
-    """
-    Save results and input cards to a file.
-    """
-    save = input("\nWould you like to save these results to a file? (yes/no): ").lower()
-    if save.startswith('y'):
-        if not os.path.exists('decks'):
-            os.makedirs('decks')
-
-        filename = input(f"Enter filename (default: {default_filename}): ").strip()
-        if not filename:
-            filename = default_filename
-
-        if not filename.endswith('.txt'):
-            filename += '.txt'
-
-        filepath = os.path.join('decks', filename)
-
-        with open(filepath, 'w', encoding='utf-8') as f:
-            f.write(output_text)
-            f.write("\nInput Cards List:\n")
-            f.write("===============\n")
-            for i, card in enumerate(cards, 1):
-                f.write(f"{i}. {card}\n")
-        print(f"Results saved to {filepath}")
-
-def save_html_output(filename, decklist_results, expansion_results, cards, language, cards_not_found, execution_time):
+def save_html_output(filename, decklist_results, expansion_results, original_cards, language, cards_not_found, execution_time, total_price):
     """
     Save the results as a simple HTML file.
     """
+    # Ensure the filename has .html extension and is in the decks folder
+    if not filename.endswith('.html'):
+        filename += '.html'
+    
+    if not os.path.exists('decks'):
+        os.makedirs('decks')
+    
+    if not filename.startswith('decks/'):
+        filename = os.path.join('decks', filename)
+    
     html = [
         "<!DOCTYPE html>",
         "<html lang='en'>",
@@ -196,8 +180,9 @@ def save_html_output(filename, decklist_results, expansion_results, cards, langu
         "</head>",
         "<body>",
         f"<h1>CardMarket Results ({language.upper()})</h1>",
-        f"<p><b>Total cards searched:</b> {len(cards)}</p>",
+        f"<p><b>Total cards searched:</b> {len(original_cards)}</p>",
         f"<p><b>Cards not found:</b> {cards_not_found}</p>",
+        f"<p><b>Total price:</b> {total_price:.2f} €</p>",
         f"<p><b>Execution time:</b> {execution_time:.2f} seconds</p>",
     ]
 
@@ -215,7 +200,7 @@ def save_html_output(filename, decklist_results, expansion_results, cards, langu
                     row_html += f"<td>{cell}</td>"
             html.append(f"<tr>{row_html}</tr>")
         html.append("</table>")
-        html.append(f"<p><b>Total cards in this category:</b> {len(results)}/{len(cards)}</p>")
+        html.append(f"<p><b>Total cards in this category:</b> {len(results)}/{len(original_cards)}</p>")
 
         # Seller breakdown
         seller_totals = {}
@@ -237,11 +222,11 @@ def save_html_output(filename, decklist_results, expansion_results, cards, langu
             html.append("</ul></div>")
         html.append("<hr>")
 
-    # List input cards at the end
-    html.append("<h2>Input Cards List</h2><ol>")
-    for card in cards:
-        html.append(f"<li>{card}</li>")
-    html.append("</ol>")
+    # List input cards at the end in original format
+    html.append("<h2>Input Cards List</h2><pre>")
+    for card in original_cards:
+        html.append(card)
+    html.append("</pre>")
 
     html.append("</body></html>")
 
@@ -257,14 +242,21 @@ def main():
     parser.add_argument('--sleep', type=float, default=1.0, help='Sleep time between requests (seconds)')
     args = parser.parse_args()
 
-    # Step 1: Clean the decklist in-place
-    clean_decklist_inplace(args.input)
-
     start_time = time.time()
     scraper = None
-    output_text = ""
 
     try:
+        # Read original card list before cleaning
+        try:
+            with open(args.input, 'r', encoding='utf-8') as file:
+                original_cards = [line.rstrip('\n\r') for line in file if line.strip()]
+        except FileNotFoundError:
+            print(f"Error: {args.input} file not found!")
+            return
+
+        # Step 1: Clean the decklist in-place
+        clean_decklist_inplace(args.input)
+
         # Read cleaned card list
         try:
             with open(args.input, 'r', encoding='utf-8') as file:
@@ -301,23 +293,30 @@ def main():
                         best_seller = "MagicBarcelona"
                         print(f"  [*] Selected MagicBarcelona price due to threshold ({best_price:.2f} €)")
 
-                row = [
-                    index,
-                    card,
-                    f"{best_price:.2f} €" if best_price != "N/A" else "N/A",
-                    best_seller
-                ]
-                if best_price != "N/A":
-                    if best_price <= 2.0:
-                        decklist_results.append(row)
-                        decklist_total += best_price
-                    else:
-                        expansion_results.append(row)
-                        expansion_total += best_price
-                else:
-                    row = [index, card, "Not found", "N/A"]
+                # Check if price is above 10 euros - treat as not found
+                if best_price != "N/A" and best_price > 10.0:
+                    print(f"  [!] Price above 10€ ({best_price:.2f} €) - treating as not found")
+                    row = [index, card, "Not found (>10€)", "N/A"]
                     decklist_results.append(row)
                     cards_not_found += 1
+                else:
+                    row = [
+                        index,
+                        card,
+                        f"{best_price:.2f} €" if best_price != "N/A" else "N/A",
+                        best_seller
+                    ]
+                    if best_price != "N/A":
+                        if best_price <= 2.0:
+                            decklist_results.append(row)
+                            decklist_total += best_price
+                        else:
+                            expansion_results.append(row)
+                            expansion_total += best_price
+                    else:
+                        row = [index, card, "Not found", "N/A"]
+                        decklist_results.append(row)
+                        cards_not_found += 1
             else:
                 row = [index, card, "Not found", "N/A"]
                 decklist_results.append(row)
@@ -328,6 +327,7 @@ def main():
             results.sort(key=lambda x: (x[3], x[1]))
 
         execution_time = time.time() - start_time
+        total_price = decklist_total + expansion_total
 
         # Close the browser as soon as scraping is done
         if scraper:
@@ -335,12 +335,12 @@ def main():
             scraper = None
 
         # Print header
-        output_text += f"Card Search Results ({args.lang.upper()})\n"
-        output_text += f"==================\n"
-        output_text += f"Total cards searched: {len(cards)}\n"
-        output_text += f"Cards not found: {cards_not_found}\n"
-        output_text += f"Execution time: {execution_time:.2f} seconds\n\n"
-        print(output_text)
+        print(f"\nCard Search Results ({args.lang.upper()})")
+        print(f"==================")
+        print(f"Total cards searched: {len(cards)}")
+        print(f"Cards not found: {cards_not_found}")
+        print(f"Total price: {total_price:.2f} €")
+        print(f"Execution time: {execution_time:.2f} seconds\n")
 
         # Print Decklist
         headers = ["#", "Card Name", "Lowest Price", "Best Seller"]
@@ -355,18 +355,23 @@ def main():
         print(f"Total cards in expansion: {len(expansion_results)}/{len(cards)}")
         print(f"Total value: {expansion_total:.2f} €\n")
 
-        save_to_file(output_text, f"cardmarket_results_{args.lang}.txt", cards)
-
-        # Save HTML output
-        save_html_output(
-            filename=f"cardmarket_results_{args.lang}.html",
-            decklist_results=decklist_results,
-            expansion_results=expansion_results,
-            cards=cards,
-            language=args.lang,
-            cards_not_found=cards_not_found,
-            execution_time=execution_time
-        )
+        # Ask for HTML filename
+        save_html = input("\nWould you like to save the HTML summary? (yes/no): ").lower()
+        if save_html.startswith('y'):
+            filename = input(f"Enter filename (default: cardmarket_results_{args.lang}): ").strip()
+            if not filename:
+                filename = f"cardmarket_results_{args.lang}"
+            
+            save_html_output(
+                filename=filename,
+                decklist_results=decklist_results,
+                expansion_results=expansion_results,
+                original_cards=original_cards,
+                language=args.lang,
+                cards_not_found=cards_not_found,
+                execution_time=execution_time,
+                total_price=total_price
+            )
 
         # Exit after saving
         sys.exit(0)
