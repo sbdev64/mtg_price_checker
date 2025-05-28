@@ -163,6 +163,31 @@ def get_top_price(prices):
     price_list.sort()
     return price_list[0]
 
+def generate_seller_summary(results, sellers):
+    """
+    Generate a summary of each seller's performance.
+    """
+    seller_summary = {}
+    
+    for seller in sellers:
+        seller_summary[seller] = {
+            'count': 0,
+            'total': 0.0,
+            'cards': []
+        }
+    
+    for result in results:
+        if result['best_seller'] != "N/A" and result['best_price'] != "N/A":
+            seller = result['best_seller']
+            price = result['best_price']
+            card = result['card']
+            
+            seller_summary[seller]['count'] += 1
+            seller_summary[seller]['total'] += price
+            seller_summary[seller]['cards'].append(f"{card} ({price:.2f} €)")
+    
+    return seller_summary
+
 def save_html_output(filename, decklist_results, expansion_results, not_found_results, original_cards, languages, execution_time, decklist_total, expansion_total, total_price, sellers):
     """
     Save the results as a simple HTML file.
@@ -187,7 +212,7 @@ def save_html_output(filename, decklist_results, expansion_results, not_found_re
         "<title>CardMarket Results</title>",
         "<style>",
         "body { font-family: Arial, sans-serif; margin: 2em; }",
-        "h2 { color: #2c3e50; }",
+        "h2, h3 { color: #2c3e50; }",
         "table { border-collapse: collapse; width: 100%; margin-bottom: 2em; }",
         "th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }",
         "th { background: #f4f4f4; }",
@@ -195,6 +220,8 @@ def save_html_output(filename, decklist_results, expansion_results, not_found_re
         ".seller-summary { margin-bottom: 2em; }",
         ".lowest-price { background-color: #d4edda; font-weight: bold; }",
         ".price-cell { text-align: center; }",
+        ".summary-table { margin-top: 1em; }",
+        ".card-list { font-size: 0.9em; max-width: 300px; }",
         "</style>",
         "</head>",
         "<body>",
@@ -226,6 +253,28 @@ def save_html_output(filename, decklist_results, expansion_results, not_found_re
         html.append("</table>")
         html.append(f"<p><b>Total cards in decklist:</b> {len(decklist_results)}</p>")
         html.append(f"<p><b>Decklist total value:</b> {decklist_total:.2f} €</p>")
+        
+        # Add seller summary for decklist
+        decklist_summary = generate_seller_summary(decklist_results, sellers)
+        html.append("<h3>Decklist - Seller Summary</h3>")
+        html.append("<table class='summary-table'>")
+        html.append("<tr><th>Seller</th><th>Cards Count</th><th>Total Amount</th><th>Cards</th></tr>")
+        
+        # Sort by count (descending) then by total amount (descending)
+        sorted_sellers = sorted(decklist_summary.items(), 
+                              key=lambda x: (x[1]['count'], x[1]['total']), 
+                              reverse=True)
+        
+        for seller, data in sorted_sellers:
+            if data['count'] > 0:
+                cards_list = "<br>".join(data['cards'])
+                html.append(f"<tr>")
+                html.append(f"<td><b>{seller}</b></td>")
+                html.append(f"<td>{data['count']}</td>")
+                html.append(f"<td>{data['total']:.2f} €</td>")
+                html.append(f"<td class='card-list'>{cards_list}</td>")
+                html.append(f"</tr>")
+        html.append("</table>")
         html.append("<hr>")
 
     # Expansion section
@@ -249,6 +298,28 @@ def save_html_output(filename, decklist_results, expansion_results, not_found_re
         html.append("</table>")
         html.append(f"<p><b>Total cards in expansion:</b> {len(expansion_results)}</p>")
         html.append(f"<p><b>Expansion total value:</b> {expansion_total:.2f} €</p>")
+        
+        # Add seller summary for expansion
+        expansion_summary = generate_seller_summary(expansion_results, sellers)
+        html.append("<h3>Expansion - Seller Summary</h3>")
+        html.append("<table class='summary-table'>")
+        html.append("<tr><th>Seller</th><th>Cards Count</th><th>Total Amount</th><th>Cards</th></tr>")
+        
+        # Sort by count (descending) then by total amount (descending)
+        sorted_sellers = sorted(expansion_summary.items(), 
+                              key=lambda x: (x[1]['count'], x[1]['total']), 
+                              reverse=True)
+        
+        for seller, data in sorted_sellers:
+            if data['count'] > 0:
+                cards_list = "<br>".join(data['cards'])
+                html.append(f"<tr>")
+                html.append(f"<td><b>{seller}</b></td>")
+                html.append(f"<td>{data['count']}</td>")
+                html.append(f"<td>{data['total']:.2f} €</td>")
+                html.append(f"<td class='card-list'>{cards_list}</td>")
+                html.append(f"</tr>")
+        html.append("</table>")
         html.append("<hr>")
 
     # Not found section
@@ -400,7 +471,21 @@ def main():
             headers = ["#", "Card Name", "Lowest Price", "Best Seller"]
             print(tabulate(table_data, headers=headers, tablefmt="grid"))
             print(f"Total cards in decklist: {len(decklist_results)}")
-            print(f"Decklist total value: {decklist_total:.2f} €\n")
+            print(f"Decklist total value: {decklist_total:.2f} €")
+            
+            # Print decklist seller summary
+            decklist_summary = generate_seller_summary(decklist_results, sellers_list)
+            print(f"\n{'-'*10} Decklist Seller Summary {'-'*10}")
+            summary_data = []
+            sorted_sellers = sorted(decklist_summary.items(), 
+                                  key=lambda x: (x[1]['count'], x[1]['total']), 
+                                  reverse=True)
+            for seller, data in sorted_sellers:
+                if data['count'] > 0:
+                    summary_data.append([seller, data['count'], f"{data['total']:.2f} €"])
+            if summary_data:
+                print(tabulate(summary_data, headers=["Seller", "Cards", "Total"], tablefmt="grid"))
+            print()
 
         # Print Expansion
         if expansion_results:
@@ -412,7 +497,21 @@ def main():
             headers = ["#", "Card Name", "Lowest Price", "Best Seller"]
             print(tabulate(table_data, headers=headers, tablefmt="grid"))
             print(f"Total cards in expansion: {len(expansion_results)}")
-            print(f"Expansion total value: {expansion_total:.2f} €\n")
+            print(f"Expansion total value: {expansion_total:.2f} €")
+            
+            # Print expansion seller summary
+            expansion_summary = generate_seller_summary(expansion_results, sellers_list)
+            print(f"\n{'-'*10} Expansion Seller Summary {'-'*10}")
+            summary_data = []
+            sorted_sellers = sorted(expansion_summary.items(), 
+                                  key=lambda x: (x[1]['count'], x[1]['total']), 
+                                  reverse=True)
+            for seller, data in sorted_sellers:
+                if data['count'] > 0:
+                    summary_data.append([seller, data['count'], f"{data['total']:.2f} €"])
+            if summary_data:
+                print(tabulate(summary_data, headers=["Seller", "Cards", "Total"], tablefmt="grid"))
+            print()
 
         # Print Not Found
         if not_found_results:
@@ -442,7 +541,7 @@ def main():
             decklist_total=decklist_total,
             expansion_total=expansion_total,
             total_price=total_price,
-            sellers=sellers_list  # Use the stored sellers list
+            sellers=sellers_list
         )
 
         # Exit after saving
