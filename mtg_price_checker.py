@@ -40,11 +40,14 @@ class CardMarketScraper:
     Scrapes CardMarket for Magic: The Gathering card prices from specific sellers.
     """
 
-    def __init__(self, headless=True, barcelona_threshold=0.50, language='en', sellers=None, sleep_time=1.0):
-        self.language = language
-        self.base_url = f"https://www.cardmarket.com/{language}/Magic/Users/{{0}}/Offers/Singles"
-        self.sellers = sellers or ["MagicBarcelona", "TEMPEST-STORE", "ManaVortex-POOL4YOU", "Mazvigosl"]
-        self.barcelona_threshold = barcelona_threshold
+    def __init__(self, headless=True, languages=['en'], sellers=None, sleep_time=1.0):
+        self.languages = languages if isinstance(languages, list) else [languages]
+        self.base_url = "https://www.cardmarket.com/{0}/Magic/Users/{1}/Offers/Singles"
+        self.sellers = sellers or [
+            "MagicBarcelona", "TEMPEST-STORE", "ManaVortex-POOL4YOU", "Mazvigosl",
+            "Itaca", "Metropolis-Center", "willybizarre", "GENEXCOMICS", 
+            "Eurekagames", "DUAL-GAMES"
+        ]
         self.sleep_time = sleep_time
 
         chrome_options = Options()
@@ -59,13 +62,13 @@ class CardMarketScraper:
         self.driver = webdriver.Chrome(service=service, options=chrome_options)
         self.driver.implicitly_wait(3)
 
-    def get_card_price(self, seller, card_name):
+    def get_card_price(self, seller, card_name, language):
         """
-        Get the lowest price for a specific card from a seller.
+        Get the lowest price for a specific card from a seller in a specific language.
         """
         encoded_name = quote(card_name)
-        language_id = "1" if self.language == "en" else "4"
-        url = f"{self.base_url.format(seller)}?name={encoded_name}&idLanguage={language_id}&sortBy=price_asc"
+        language_id = "1" if language == "en" else "4"
+        url = f"{self.base_url.format(language, seller)}?name={encoded_name}&idLanguage={language_id}&sortBy=price_asc"
 
         try:
             self.driver.get(url)
@@ -102,32 +105,44 @@ class CardMarketScraper:
                 return lowest_price if lowest_price != float('inf') else None
 
             except TimeoutException:
-                print(f"  [!] No results found for '{card_name}' from {seller}")
+                print(f"  [!] No results found for '{card_name}' from {seller} ({language.upper()})")
                 return None
 
         except Exception as e:
-            print(f"  [!] Error checking {seller}: {str(e)}")
+            print(f"  [!] Error checking {seller} ({language.upper()}): {str(e)}")
             return None
 
     def find_all_prices(self, card_name):
         """
-        Find prices for a card across all sellers.
+        Find prices for a card across all sellers and languages.
         """
-        prices = {}
+        all_prices = {}
         found_any = False
 
         for seller in self.sellers:
-            print(f"  Checking {seller}...", end=' ', flush=True)
-            price = self.get_card_price(seller, card_name)
-            if price is not None:
-                print(f"Found: {price:.2f} €")
-                prices[seller] = price
-                found_any = True
+            seller_prices = {}
+            seller_found = False
+            
+            for language in self.languages:
+                print(f"  Checking {seller} ({language.upper()})...", end=' ', flush=True)
+                price = self.get_card_price(seller, card_name, language)
+                if price is not None:
+                    print(f"Found: {price:.2f} €")
+                    seller_prices[language] = price
+                    seller_found = True
+                    found_any = True
+                else:
+                    print("Not found")
+                    seller_prices[language] = None
+            
+            # Store the best price for this seller across all languages
+            valid_prices = [p for p in seller_prices.values() if p is not None]
+            if valid_prices:
+                all_prices[seller] = min(valid_prices)
             else:
-                print("Not found")
-                prices[seller] = None
+                all_prices[seller] = None
 
-        return prices if found_any else None
+        return all_prices if found_any else None
 
     def close(self):
         """
@@ -148,7 +163,7 @@ def get_top_price(prices):
     price_list.sort()
     return price_list[0]
 
-def save_html_output(filename, decklist_results, expansion_results, original_cards, language, cards_not_found, execution_time, total_price):
+def save_html_output(filename, decklist_results, expansion_results, not_found_results, original_cards, languages, execution_time, decklist_total, expansion_total, total_price, sellers):
     """
     Save the results as a simple HTML file.
     """
@@ -161,6 +176,8 @@ def save_html_output(filename, decklist_results, expansion_results, original_car
     
     if not filename.startswith('decks/'):
         filename = os.path.join('decks', filename)
+    
+    languages_str = "+".join([lang.upper() for lang in languages])
     
     html = [
         "<!DOCTYPE html>",
@@ -176,50 +193,73 @@ def save_html_output(filename, decklist_results, expansion_results, original_car
         "th { background: #f4f4f4; }",
         ".not-found { color: #c0392b; }",
         ".seller-summary { margin-bottom: 2em; }",
+        ".lowest-price { background-color: #d4edda; font-weight: bold; }",
+        ".price-cell { text-align: center; }",
         "</style>",
         "</head>",
         "<body>",
-        f"<h1>CardMarket Results ({language.upper()})</h1>",
+        f"<h1>CardMarket Results ({languages_str})</h1>",
         f"<p><b>Total cards searched:</b> {len(original_cards)}</p>",
-        f"<p><b>Cards not found:</b> {cards_not_found}</p>",
+        f"<p><b>Cards not found:</b> {len(not_found_results)}</p>",
         f"<p><b>Total price:</b> {total_price:.2f} €</p>",
         f"<p><b>Execution time:</b> {execution_time:.2f} seconds</p>",
     ]
 
-    for title, results in [("Decklist (≤2.0€)", decklist_results), ("Expansion (>2.0€)", expansion_results)]:
-        html.append(f"<h2>{title}</h2>")
-        headers = ["#", "Card Name", "Lowest Price", "Best Seller"]
+    # Decklist section
+    if decklist_results:
+        html.append("<h2>Decklist (≤2.0€)</h2>")
+        headers = ["#", "Card Name"] + sellers
         html.append("<table>")
         html.append("<tr>" + "".join(f"<th>{h}</th>" for h in headers) + "</tr>")
-        for row in results:
-            row_html = ""
-            for cell in row:
-                if isinstance(cell, str) and "Not found" in cell:
-                    row_html += f"<td class='not-found'>{cell}</td>"
+        for row in decklist_results:
+            html.append("<tr>")
+            html.append(f"<td>{row['index']}</td>")
+            html.append(f"<td>{row['card']}</td>")
+            for seller in sellers:
+                price = row['prices'].get(seller)
+                if price is not None:
+                    css_class = "price-cell lowest-price" if seller == row['best_seller'] else "price-cell"
+                    html.append(f"<td class='{css_class}'>{price:.2f} €</td>")
                 else:
-                    row_html += f"<td>{cell}</td>"
-            html.append(f"<tr>{row_html}</tr>")
+                    html.append("<td class='price-cell not-found'>-</td>")
+            html.append("</tr>")
         html.append("</table>")
-        html.append(f"<p><b>Total cards in this category:</b> {len(results)}/{len(original_cards)}</p>")
+        html.append(f"<p><b>Total cards in decklist:</b> {len(decklist_results)}</p>")
+        html.append(f"<p><b>Decklist total value:</b> {decklist_total:.2f} €</p>")
+        html.append("<hr>")
 
-        # Seller breakdown
-        seller_totals = {}
-        for result in results:
-            seller = result[3]
-            if seller != "N/A":
-                if seller not in seller_totals:
-                    seller_totals[seller] = {"count": 0, "total": 0.0}
-                seller_totals[seller]["count"] += 1
-                try:
-                    if result[2] != "Not found":
-                        seller_totals[seller]["total"] += float(result[2].replace(" €", ""))
-                except Exception:
-                    pass
-        if seller_totals:
-            html.append("<div class='seller-summary'><b>Breakdown by seller:</b><ul>")
-            for seller, data in seller_totals.items():
-                html.append(f"<li>{seller}: {data['count']} cards - {data['total']:.2f} €</li>")
-            html.append("</ul></div>")
+    # Expansion section
+    if expansion_results:
+        html.append("<h2>Expansion (>2.0€)</h2>")
+        headers = ["#", "Card Name"] + sellers
+        html.append("<table>")
+        html.append("<tr>" + "".join(f"<th>{h}</th>" for h in headers) + "</tr>")
+        for row in expansion_results:
+            html.append("<tr>")
+            html.append(f"<td>{row['index']}</td>")
+            html.append(f"<td>{row['card']}</td>")
+            for seller in sellers:
+                price = row['prices'].get(seller)
+                if price is not None:
+                    css_class = "price-cell lowest-price" if seller == row['best_seller'] else "price-cell"
+                    html.append(f"<td class='{css_class}'>{price:.2f} €</td>")
+                else:
+                    html.append("<td class='price-cell not-found'>-</td>")
+            html.append("</tr>")
+        html.append("</table>")
+        html.append(f"<p><b>Total cards in expansion:</b> {len(expansion_results)}</p>")
+        html.append(f"<p><b>Expansion total value:</b> {expansion_total:.2f} €</p>")
+        html.append("<hr>")
+
+    # Not found section
+    if not_found_results:
+        html.append("<h2>Cards Not Found</h2>")
+        html.append("<table>")
+        html.append("<tr><th>#</th><th>Card Name</th><th>Reason</th></tr>")
+        for row in not_found_results:
+            html.append(f"<tr><td>{row['index']}</td><td>{row['card']}</td><td class='not-found'>{row['reason']}</td></tr>")
+        html.append("</table>")
+        html.append(f"<p><b>Total cards not found:</b> {len(not_found_results)}</p>")
         html.append("<hr>")
 
     # List input cards at the end in original format
@@ -238,12 +278,19 @@ def main():
     parser = argparse.ArgumentParser(description="CardMarket MTG Price Checker (auto-cleans decklist)")
     parser.add_argument('--input', required=True, help='Input decklist file (txt)')
     parser.add_argument('--headless', action='store_true', help='Run browser in headless mode')
-    parser.add_argument('--lang', default='en', choices=['en', 'es'], help='Language for search')
+    parser.add_argument('--lang', default='en', choices=['en', 'es', 'all'], help='Language for search (en, es, or all)')
     parser.add_argument('--sleep', type=float, default=1.0, help='Sleep time between requests (seconds)')
     args = parser.parse_args()
 
+    # Determine which languages to search
+    if args.lang == 'all':
+        languages = ['en', 'es']
+    else:
+        languages = [args.lang]
+
     start_time = time.time()
     scraper = None
+    sellers_list = None  # Store sellers list before closing scraper
 
     try:
         # Read original card list before cleaning
@@ -265,17 +312,21 @@ def main():
             print(f"Error: {args.input} file not found!")
             return
 
-        print(f"Searching for best prices for {len(cards)} cards...\n")
+        languages_str = "+".join([lang.upper() for lang in languages])
+        print(f"Searching for best prices for {len(cards)} cards in {languages_str}...\n")
+        
         scraper = CardMarketScraper(
             headless=args.headless,
-            barcelona_threshold=0.50,
-            language=args.lang,
+            languages=languages,
             sleep_time=args.sleep
         )
 
+        # Store sellers list before closing scraper
+        sellers_list = scraper.sellers
+
         decklist_results = []    # ≤2.0€
         expansion_results = []   # >2.0€
-        cards_not_found = 0
+        not_found_results = []   # Not found or >10€
         decklist_total = 0.0
         expansion_total = 0.0
 
@@ -286,45 +337,42 @@ def main():
             if prices:
                 best_price, best_seller = get_top_price(prices)
 
-                # MagicBarcelona priority logic
-                if prices.get("MagicBarcelona") is not None and best_seller != "MagicBarcelona":
-                    if prices["MagicBarcelona"] <= (best_price + scraper.barcelona_threshold):
-                        best_price = prices["MagicBarcelona"]
-                        best_seller = "MagicBarcelona"
-                        print(f"  [*] Selected MagicBarcelona price due to threshold ({best_price:.2f} €)")
-
                 # Check if price is above 10 euros - treat as not found
                 if best_price != "N/A" and best_price > 10.0:
                     print(f"  [!] Price above 10€ ({best_price:.2f} €) - treating as not found")
-                    row = [index, card, "Not found (>10€)", "N/A"]
-                    decklist_results.append(row)
-                    cards_not_found += 1
+                    not_found_results.append({
+                        'index': index,
+                        'card': card,
+                        'reason': f"Price above 10€ ({best_price:.2f} €)"
+                    })
                 else:
-                    row = [
-                        index,
-                        card,
-                        f"{best_price:.2f} €" if best_price != "N/A" else "N/A",
-                        best_seller
-                    ]
+                    card_data = {
+                        'index': index,
+                        'card': card,
+                        'prices': prices,
+                        'best_price': best_price,
+                        'best_seller': best_seller
+                    }
+                    
                     if best_price != "N/A":
                         if best_price <= 2.0:
-                            decklist_results.append(row)
+                            decklist_results.append(card_data)
                             decklist_total += best_price
                         else:
-                            expansion_results.append(row)
+                            expansion_results.append(card_data)
                             expansion_total += best_price
                     else:
-                        row = [index, card, "Not found", "N/A"]
-                        decklist_results.append(row)
-                        cards_not_found += 1
+                        not_found_results.append({
+                            'index': index,
+                            'card': card,
+                            'reason': "No prices found"
+                        })
             else:
-                row = [index, card, "Not found", "N/A"]
-                decklist_results.append(row)
-                cards_not_found += 1
-
-        # Sort results
-        for results in [decklist_results, expansion_results]:
-            results.sort(key=lambda x: (x[3], x[1]))
+                not_found_results.append({
+                    'index': index,
+                    'card': card,
+                    'reason': "No results from any seller"
+                })
 
         execution_time = time.time() - start_time
         total_price = decklist_total + expansion_total
@@ -335,43 +383,67 @@ def main():
             scraper = None
 
         # Print header
-        print(f"\nCard Search Results ({args.lang.upper()})")
+        print(f"\nCard Search Results ({languages_str})")
         print(f"==================")
         print(f"Total cards searched: {len(cards)}")
-        print(f"Cards not found: {cards_not_found}")
+        print(f"Cards not found: {len(not_found_results)}")
         print(f"Total price: {total_price:.2f} €")
         print(f"Execution time: {execution_time:.2f} seconds\n")
 
         # Print Decklist
-        headers = ["#", "Card Name", "Lowest Price", "Best Seller"]
-        print(f"\n{'-'*20} Decklist (≤2.0€) {'-'*20}")
-        print(tabulate(decklist_results, headers=headers, tablefmt="grid"))
-        print(f"Total cards in decklist: {len(decklist_results)}/{len(cards)}")
-        print(f"Total value: {decklist_total:.2f} €\n")
+        if decklist_results:
+            print(f"\n{'-'*20} Decklist (≤2.0€) {'-'*20}")
+            table_data = []
+            for result in decklist_results:
+                row = [result['index'], result['card'], f"{result['best_price']:.2f} €", result['best_seller']]
+                table_data.append(row)
+            headers = ["#", "Card Name", "Lowest Price", "Best Seller"]
+            print(tabulate(table_data, headers=headers, tablefmt="grid"))
+            print(f"Total cards in decklist: {len(decklist_results)}")
+            print(f"Decklist total value: {decklist_total:.2f} €\n")
 
         # Print Expansion
-        print(f"\n{'-'*20} Expansion (>2.0€) {'-'*20}")
-        print(tabulate(expansion_results, headers=headers, tablefmt="grid"))
-        print(f"Total cards in expansion: {len(expansion_results)}/{len(cards)}")
-        print(f"Total value: {expansion_total:.2f} €\n")
+        if expansion_results:
+            print(f"\n{'-'*20} Expansion (>2.0€) {'-'*20}")
+            table_data = []
+            for result in expansion_results:
+                row = [result['index'], result['card'], f"{result['best_price']:.2f} €", result['best_seller']]
+                table_data.append(row)
+            headers = ["#", "Card Name", "Lowest Price", "Best Seller"]
+            print(tabulate(table_data, headers=headers, tablefmt="grid"))
+            print(f"Total cards in expansion: {len(expansion_results)}")
+            print(f"Expansion total value: {expansion_total:.2f} €\n")
 
-        # Ask for HTML filename
-        save_html = input("\nWould you like to save the HTML summary? (yes/no): ").lower()
-        if save_html.startswith('y'):
-            filename = input(f"Enter filename (default: cardmarket_results_{args.lang}): ").strip()
-            if not filename:
-                filename = f"cardmarket_results_{args.lang}"
-            
-            save_html_output(
-                filename=filename,
-                decklist_results=decklist_results,
-                expansion_results=expansion_results,
-                original_cards=original_cards,
-                language=args.lang,
-                cards_not_found=cards_not_found,
-                execution_time=execution_time,
-                total_price=total_price
-            )
+        # Print Not Found
+        if not_found_results:
+            print(f"\n{'-'*20} Cards Not Found {'-'*20}")
+            table_data = []
+            for result in not_found_results:
+                row = [result['index'], result['card'], result['reason']]
+                table_data.append(row)
+            headers = ["#", "Card Name", "Reason"]
+            print(tabulate(table_data, headers=headers, tablefmt="grid"))
+            print(f"Total cards not found: {len(not_found_results)}\n")
+
+        # Ask for HTML filename directly
+        default_filename = f"cardmarket_results_{args.lang}" if args.lang != 'all' else "cardmarket_results_all"
+        filename = input(f"Enter filename for HTML output (default: {default_filename}): ").strip()
+        if not filename:
+            filename = default_filename
+        
+        save_html_output(
+            filename=filename,
+            decklist_results=decklist_results,
+            expansion_results=expansion_results,
+            not_found_results=not_found_results,
+            original_cards=original_cards,
+            languages=languages,
+            execution_time=execution_time,
+            decklist_total=decklist_total,
+            expansion_total=expansion_total,
+            total_price=total_price,
+            sellers=sellers_list  # Use the stored sellers list
+        )
 
         # Exit after saving
         sys.exit(0)
