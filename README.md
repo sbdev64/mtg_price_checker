@@ -1,10 +1,3 @@
-Perfect ✅ That’s the most **reliable and user-friendly** approach, especially for Windows users.  
-I’ll update your **README.md** so it always uses `python -m cardmarket_scraper.main ...` as the default way to run, and mention the optional `cardmarket-scraper` shortcut for advanced users.  
-
-Here’s the updated **README.md**:
-
----
-
 # MTG Price Checker
 
 A command-line tool to **clean and price-check Magic: The Gathering decklists** using CardMarket sellers.
