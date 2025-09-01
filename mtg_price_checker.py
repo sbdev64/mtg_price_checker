@@ -3,7 +3,15 @@ import sys
 import time
 import argparse
 import re
+import queue
+import pickle
+import hashlib
+import warnings
+import logging
+import os
 from urllib.parse import quote
+import concurrent.futures
+from threading import Lock
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -14,6 +22,12 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 from tabulate import tabulate
+
+# Suppress warnings and logs
+warnings.filterwarnings("ignore")
+logging.getLogger().setLevel(logging.ERROR)
+os.environ["GRPC_VERBOSITY"] = "ERROR"
+os.environ["GLOG_minloglevel"] = "2"
 
 def clean_card_name(line):
     line = re.sub(r'^\d+\s+', '', line)
@@ -38,9 +52,10 @@ def clean_decklist_inplace(input_file):
 class CardMarketScraper:
     """
     Scrapes CardMarket for Magic: The Gathering card prices from specific sellers.
+    Optimized with parallel processing and caching.
     """
 
-    def __init__(self, headless=True, languages=['en'], sellers=None, sleep_time=1.0):
+    def __init__(self, headless=True, languages=['en'], sellers=None, sleep_time=0.5, max_workers=3):
         self.languages = languages if isinstance(languages, list) else [languages]
         self.base_url = "https://www.cardmarket.com/{0}/Magic/Users/{1}/Offers/Singles"
         self.sellers = sellers or [
@@ -49,46 +64,158 @@ class CardMarketScraper:
             "Eurekagames", "DUAL-GAMES"
         ]
         self.sleep_time = sleep_time
+        self.max_workers = max_workers
+        self.headless = headless
+        
+        # Initialize cache
+        self.cache_file = "cardmarket_cache.pkl"
+        self.cache = self.load_cache()
+        self.cache_lock = Lock()
+        
+        # Create driver pool
+        self.drivers = []
+        self.driver_queue = queue.Queue()
+        
+        print(f"Initializing {max_workers} browser instances...")
+        for i in range(max_workers):
+            driver = self._create_driver(headless)
+            self.drivers.append(driver)
+            self.driver_queue.put(driver)
+        print("Browser instances ready!")
 
+    def _create_driver(self, headless):
+        """Create an optimized Chrome driver instance with better headless support."""
         chrome_options = Options()
+        
         if headless:
             chrome_options.add_argument('--headless=new')
-        chrome_options.add_argument('--disable-gpu')
+            # Additional headless-specific options to fix GPU issues
+            chrome_options.add_argument('--disable-gpu')
+            chrome_options.add_argument('--disable-software-rasterizer')
+            chrome_options.add_argument('--disable-background-timer-throttling')
+            chrome_options.add_argument('--disable-backgrounding-occluded-windows')
+            chrome_options.add_argument('--disable-renderer-backgrounding')
+            chrome_options.add_argument('--disable-features=TranslateUI')
+            chrome_options.add_argument('--disable-ipc-flooding-protection')
+        
+        # Common performance optimizations
         chrome_options.add_argument('--no-sandbox')
+        chrome_options.add_argument('--disable-dev-shm-usage')
+        chrome_options.add_argument('--disable-extensions')
+        chrome_options.add_argument('--disable-plugins')
+        chrome_options.add_argument('--disable-images')
+        chrome_options.add_argument('--no-first-run')
+        chrome_options.add_argument('--no-default-browser-check')
+        chrome_options.add_argument('--disable-default-apps')
+        chrome_options.add_argument('--disable-popup-blocking')
+        chrome_options.add_argument('--disable-prompt-on-repost')
+        chrome_options.add_argument('--disable-hang-monitor')
+        chrome_options.add_argument('--disable-client-side-phishing-detection')
+        chrome_options.add_argument('--disable-component-update')
+        chrome_options.add_argument('--disable-domain-reliability')
+        chrome_options.add_argument('--disable-features=VizDisplayCompositor')
         chrome_options.add_argument('--window-size=1920x1080')
+        
+        # Enhanced logging suppression
         chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])
+        chrome_options.add_experimental_option('useAutomationExtension', False)
+        chrome_options.add_argument('--log-level=3')  # Suppress INFO, WARNING, ERROR
+        chrome_options.add_argument('--silent')
+        chrome_options.add_argument('--disable-logging')
+        chrome_options.add_argument('--disable-dev-tools')
 
-        service = Service(ChromeDriverManager().install())
-        self.driver = webdriver.Chrome(service=service, options=chrome_options)
-        self.driver.implicitly_wait(3)
+        # Suppress specific warnings
+        chrome_options.add_argument('--disable-features=VizDisplayCompositor,VizServiceDisplayCompositor')
+        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+        chrome_options.add_argument('--disable-web-security')
+        chrome_options.add_argument('--disable-features=MediaRouter')
+        chrome_options.add_argument('--disable-speech-api')
+        chrome_options.add_argument('--disable-voice-input')
+        chrome_options.add_argument("--disable-speech-api")
+        chrome_options.add_argument("--disable-voice-input")
+        chrome_options.add_argument("--mute-audio")
+        
+        # Set user agent to avoid detection
+        chrome_options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
 
-    def get_card_price(self, seller, card_name, language):
+        try:
+            service = Service(ChromeDriverManager().install())
+            # Suppress service logs completely
+            if os.name == 'nt':  # Windows
+                service.log_path = 'NUL'
+            else:  # Unix/Linux/Mac
+                service.log_path = '/dev/null'
+            
+            # Suppress ChromeDriverManager logs
+            os.environ['WDM_LOG_LEVEL'] = '0'
+            
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+            driver.implicitly_wait(1)
+            
+            # Set page load timeout
+            driver.set_page_load_timeout(30)
+            
+            return driver
+        except Exception as e:
+            print(f"Error creating driver: {e}")
+            raise
+
+    def load_cache(self):
+        """Load cached results from disk."""
+        try:
+            with open(self.cache_file, 'rb') as f:
+                cache = pickle.load(f)
+                print(f"Loaded {len(cache)} cached results")
+                return cache
+        except FileNotFoundError:
+            print("No cache file found, starting fresh")
+            return {}
+
+    def save_cache(self):
+        """Save cache to disk."""
+        with self.cache_lock:
+            with open(self.cache_file, 'wb') as f:
+                pickle.dump(self.cache, f)
+            print(f"Saved {len(self.cache)} results to cache")
+
+    def get_cache_key(self, card_name, languages, sellers):
+        """Generate a unique cache key for the card search."""
+        key_data = f"{card_name}_{sorted(languages)}_{sorted(sellers)}"
+        return hashlib.md5(key_data.encode()).hexdigest()
+
+    def get_card_price_with_driver(self, driver, seller, card_name, language):
         """
-        Get the lowest price for a specific card from a seller in a specific language.
+        Get the lowest price for a specific card from a seller using a specific driver.
         """
         encoded_name = quote(card_name)
         language_id = "1" if language == "en" else "4"
         url = f"{self.base_url.format(language, seller)}?name={encoded_name}&idLanguage={language_id}&sortBy=price_asc"
 
         try:
-            self.driver.get(url)
-            time.sleep(self.sleep_time)
+            driver.get(url)
+            if self.sleep_time > 0:
+                time.sleep(self.sleep_time)
 
-            # Accept cookies if prompted
+            # Accept cookies if prompted (shorter timeout)
             try:
-                cookie_button = WebDriverWait(self.driver, 3).until(
-                    EC.presence_of_element_located((By.ID, "onetrust-accept-btn-handler"))
+                cookie_button = WebDriverWait(driver, 2).until(
+                    EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))
                 )
                 cookie_button.click()
+                time.sleep(0.5)  # Brief pause after clicking cookies
             except TimeoutException:
                 pass
 
-            # Wait for table to load
+            # Wait for table to load (shorter timeout)
             try:
-                WebDriverWait(self.driver, 3).until(
+                WebDriverWait(driver, 3).until(
                     EC.presence_of_element_located((By.CLASS_NAME, "table-body"))
                 )
-                price_elements = self.driver.find_elements(
+                
+                # Give a moment for content to fully load
+                time.sleep(0.5)
+                
+                price_elements = driver.find_elements(
                     By.CSS_SELECTOR,
                     "span.color-primary.small.text-end.text-nowrap.fw-bold"
                 )
@@ -105,51 +232,104 @@ class CardMarketScraper:
                 return lowest_price if lowest_price != float('inf') else None
 
             except TimeoutException:
-                print(f"  [!] No results found for '{card_name}' from {seller} ({language.upper()})")
                 return None
 
         except Exception as e:
-            print(f"  [!] Error checking {seller} ({language.upper()}): {str(e)}")
+            if not self.headless:  # Only print detailed errors in non-headless mode
+                print(f"  [!] Error checking {seller} ({language.upper()}): {str(e)}")
             return None
 
-    def find_all_prices(self, card_name):
-        """
-        Find prices for a card across all sellers and languages.
-        """
-        all_prices = {}
-        found_any = False
+    def get_card_price_threadsafe(self, seller, card_name, language):
+        """Thread-safe wrapper for getting card prices."""
+        driver = self.driver_queue.get()
+        try:
+            return self.get_card_price_with_driver(driver, seller, card_name, language)
+        finally:
+            self.driver_queue.put(driver)
 
-        for seller in self.sellers:
-            seller_prices = {}
-            seller_found = False
+    def find_all_prices_parallel(self, card_name):
+        """
+        Find prices for a card across all sellers and languages using parallel processing.
+        """
+        # Check cache first
+        cache_key = self.get_cache_key(card_name, self.languages, self.sellers)
+        with self.cache_lock:
+            if cache_key in self.cache:
+                print(f"  Using cached result")
+                return self.cache[cache_key]
+
+        all_prices = {}
+        seller_results = {}
+
+        # Create tasks for each seller-language combination
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            future_to_info = {}
             
-            for language in self.languages:
-                print(f"  Checking {seller} ({language.upper()})...", end=' ', flush=True)
-                price = self.get_card_price(seller, card_name, language)
-                if price is not None:
-                    print(f"Found: {price:.2f} €")
-                    seller_prices[language] = price
-                    seller_found = True
-                    found_any = True
-                else:
-                    print("Not found")
-                    seller_prices[language] = None
-            
-            # Store the best price for this seller across all languages
-            valid_prices = [p for p in seller_prices.values() if p is not None]
+            for seller in self.sellers:
+                for language in self.languages:
+                    future = executor.submit(self.get_card_price_threadsafe, seller, card_name, language)
+                    future_to_info[future] = (seller, language)
+
+            # Collect results
+            for future in concurrent.futures.as_completed(future_to_info):
+                seller, language = future_to_info[future]
+                try:
+                    price = future.result()
+                    if seller not in seller_results:
+                        seller_results[seller] = {}
+                    seller_results[seller][language] = price
+                    
+                    if price is not None:
+                        print(f"  {seller} ({language.upper()}): {price:.2f} €")
+                    else:
+                        print(f"  {seller} ({language.upper()}): Not found")
+                        
+                except Exception as e:
+                    if not self.headless:  # Only print detailed errors in non-headless mode
+                        print(f"  [!] Error with {seller} ({language.upper()}): {e}")
+                    if seller not in seller_results:
+                        seller_results[seller] = {}
+                    seller_results[seller][language] = None
+
+        # Process results to get best price per seller
+        found_any = False
+        for seller, lang_prices in seller_results.items():
+            valid_prices = [p for p in lang_prices.values() if p is not None]
             if valid_prices:
                 all_prices[seller] = min(valid_prices)
+                found_any = True
             else:
                 all_prices[seller] = None
 
-        return all_prices if found_any else None
+        result = all_prices if found_any else None
+        
+        # Cache the result
+        with self.cache_lock:
+            self.cache[cache_key] = result
+            
+        return result
+
+    def find_all_prices(self, card_name):
+        """
+        Public interface for finding prices (uses parallel processing).
+        """
+        return self.find_all_prices_parallel(card_name)
 
     def close(self):
         """
-        Close the browser.
+        Close all browser instances and save cache.
         """
-        if self.driver:
-            self.driver.quit()
+        print("Closing browser instances...")
+        for driver in self.drivers:
+            try:
+                driver.quit()
+            except Exception as e:
+                if not self.headless:
+                    print(f"Error closing driver: {e}")
+        
+        # Save cache
+        self.save_cache()
+        print("All browsers closed and cache saved!")
 
 def get_top_price(prices):
     """
@@ -346,11 +526,12 @@ def save_html_output(filename, decklist_results, expansion_results, not_found_re
     print(f"HTML summary saved to {filename}")
 
 def main():
-    parser = argparse.ArgumentParser(description="CardMarket MTG Price Checker (auto-cleans decklist)")
+    parser = argparse.ArgumentParser(description="CardMarket MTG Price Checker (auto-cleans decklist) - Optimized Version")
     parser.add_argument('--input', required=True, help='Input decklist file (txt)')
     parser.add_argument('--headless', action='store_true', help='Run browser in headless mode')
     parser.add_argument('--lang', default='en', choices=['en', 'es', 'all'], help='Language for search (en, es, or all)')
-    parser.add_argument('--sleep', type=float, default=1.0, help='Sleep time between requests (seconds)')
+    parser.add_argument('--sleep', type=float, default=0.5, help='Sleep time between requests (seconds)')
+    parser.add_argument('--workers', type=int, default=3, help='Number of parallel workers (default: 3)')
     args = parser.parse_args()
 
     # Determine which languages to search
@@ -361,7 +542,7 @@ def main():
 
     start_time = time.time()
     scraper = None
-    sellers_list = None  # Store sellers list before closing scraper
+    sellers_list = None
 
     try:
         # Read original card list before cleaning
@@ -384,12 +565,14 @@ def main():
             return
 
         languages_str = "+".join([lang.upper() for lang in languages])
-        print(f"Searching for best prices for {len(cards)} cards in {languages_str}...\n")
+        print(f"Searching for best prices for {len(cards)} cards in {languages_str}...")
+        print(f"Using {args.workers} parallel workers\n")
         
         scraper = CardMarketScraper(
             headless=args.headless,
             languages=languages,
-            sleep_time=args.sleep
+            sleep_time=args.sleep,
+            max_workers=args.workers
         )
 
         # Store sellers list before closing scraper
