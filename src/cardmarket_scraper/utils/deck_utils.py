@@ -20,13 +20,24 @@ def clean_decklist_inplace(input_file: str):
     print(f"Decklist cleaned: {input_file}")
 
 
-def get_top_price(prices: dict):
+def get_top_price(prices):
+    """
+    Get the lowest price, seller, and URL from a prices dict.
+    Supports both new format (dict with price+url) and old format (float).
+    """
     if not prices:
-        return ("N/A", "N/A")
-    price_list = [
-        (price, seller) for seller, price in prices.items() if price is not None
-    ]
+        return ("N/A", "N/A", None)
+
+    price_list = []
+    for seller, data in prices.items():
+        if isinstance(data, dict):
+            if data.get("price") is not None:
+                price_list.append((data["price"], seller, data.get("url")))
+        elif isinstance(data, (int, float)):
+            price_list.append((data, seller, None))
+
     if not price_list:
-        return ("N/A", "N/A")
+        return ("N/A", "N/A", None)
+
     price_list.sort()
-    return price_list[0]
+    return price_list[0]  # (price, seller, url)

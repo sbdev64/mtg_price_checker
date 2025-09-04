@@ -5,10 +5,7 @@ from tabulate import tabulate
 
 from cardmarket_scraper.utils.deck_utils import clean_decklist_inplace, get_top_price
 from cardmarket_scraper.scraper.cardmarket import CardMarketScraper
-from cardmarket_scraper.reporting.report_generator import (
-    generate_seller_summary,
-    save_html_output,
-)
+from cardmarket_scraper.reporting.report_generator import save_html_output
 from cardmarket_scraper.config.settings import PRICE_THRESHOLD_DECK, PRICE_THRESHOLD_MAX
 
 
@@ -34,7 +31,6 @@ def main():
     )
     args = parser.parse_args()
 
-    # Determine which languages to search
     languages = ["en", "es"] if args.lang == "all" else [args.lang]
 
     start_time = time.time()
@@ -45,9 +41,7 @@ def main():
         # Read original card list before cleaning
         try:
             with open(args.input, "r", encoding="utf-8") as file:
-                original_cards = [
-                    line.rstrip("\n\r") for line in file if line.strip()
-                ]
+                original_cards = [line.rstrip("\n\r") for line in file if line.strip()]
         except FileNotFoundError:
             print(f"Error: {args.input} file not found!")
             return
@@ -64,9 +58,7 @@ def main():
             return
 
         languages_str = "+".join([lang.upper() for lang in languages])
-        print(
-            f"Searching for best prices for {len(cards)} cards in {languages_str}..."
-        )
+        print(f"Searching for best prices for {len(cards)} cards in {languages_str}...")
         print(f"Using {args.workers} parallel workers\n")
 
         scraper = CardMarketScraper(
@@ -78,9 +70,9 @@ def main():
 
         sellers_list = scraper.sellers
 
-        decklist_results = []  # ≤2.0€
-        expansion_results = []  # >2.0€
-        not_found_results = []  # Not found or >10€
+        decklist_results = []
+        expansion_results = []
+        not_found_results = []
         decklist_total = 0.0
         expansion_total = 0.0
 
@@ -88,10 +80,10 @@ def main():
             print(f"\n[{index}/{len(cards)}] Processing: {card}")
             prices = scraper.find_all_prices(card)
 
-            if prices:
-                best_price, best_seller = get_top_price(prices)
+            best_price, best_seller, best_url = get_top_price(prices)
 
-                if best_price != "N/A" and best_price > PRICE_THRESHOLD_MAX:
+            if best_price != "N/A":
+                if best_price > PRICE_THRESHOLD_MAX:
                     print(
                         f"  [!] Price above {PRICE_THRESHOLD_MAX}€ "
                         f"({best_price:.2f} €) - treating as not found"
@@ -110,19 +102,15 @@ def main():
                         "prices": prices,
                         "best_price": best_price,
                         "best_seller": best_seller,
+                        "best_url": best_url,
                     }
 
-                    if best_price != "N/A":
-                        if best_price <= PRICE_THRESHOLD_DECK:
-                            decklist_results.append(card_data)
-                            decklist_total += best_price
-                        else:
-                            expansion_results.append(card_data)
-                            expansion_total += best_price
+                    if best_price <= PRICE_THRESHOLD_DECK:
+                        decklist_results.append(card_data)
+                        decklist_total += best_price
                     else:
-                        not_found_results.append(
-                            {"index": index, "card": card, "reason": "No prices found"}
-                        )
+                        expansion_results.append(card_data)
+                        expansion_total += best_price
             else:
                 not_found_results.append(
                     {"index": index, "card": card, "reason": "No results from any seller"}
@@ -155,7 +143,13 @@ def main():
                 ]
                 for result in decklist_results
             ]
-            print(tabulate(table_data, headers=["#", "Card", "Price", "Seller"], tablefmt="grid"))
+            print(
+                tabulate(
+                    table_data,
+                    headers=["#", "Card", "Price", "Seller"],
+                    tablefmt="grid",
+                )
+            )
             print(f"Decklist total value: {decklist_total:.2f} €")
 
         # Expansion
@@ -170,7 +164,13 @@ def main():
                 ]
                 for result in expansion_results
             ]
-            print(tabulate(table_data, headers=["#", "Card", "Price", "Seller"], tablefmt="grid"))
+            print(
+                tabulate(
+                    table_data,
+                    headers=["#", "Card", "Price", "Seller"],
+                    tablefmt="grid",
+                )
+            )
             print(f"Expansion total value: {expansion_total:.2f} €")
 
         # Not found

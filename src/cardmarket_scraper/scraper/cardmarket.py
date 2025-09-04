@@ -194,15 +194,15 @@ class CardMarketScraper:
                     except (ValueError, AttributeError):
                         continue
 
-                return lowest_price if lowest_price != float("inf") else None
+                return (lowest_price, url) if lowest_price != float("inf") else (None, None)
 
             except TimeoutException:
-                return None
+                return (None, None)
 
         except Exception as e:
             if not self.headless:
                 print(f"  [!] Error checking {seller} ({language.upper()}): {str(e)}")
-            return None
+            return (None, None)
 
     def get_card_price_threadsafe(self, seller, card_name, language):
         driver = self.driver_queue.get()
@@ -235,10 +235,10 @@ class CardMarketScraper:
             for future in concurrent.futures.as_completed(future_to_info):
                 seller, language = future_to_info[future]
                 try:
-                    price = future.result()
+                    price, url = future.result()
                     if seller not in seller_results:
                         seller_results[seller] = {}
-                    seller_results[seller][language] = price
+                    seller_results[seller][language] = {"price": price, "url": url}
 
                     if price is not None:
                         print(f"  {seller} ({language.upper()}): {price:.2f} €")
@@ -250,18 +250,18 @@ class CardMarketScraper:
                         print(f"  [!] Error with {seller} ({language.upper()}): {e}")
                     if seller not in seller_results:
                         seller_results[seller] = {}
-                    seller_results[seller][language] = None
+                    seller_results[seller][language] = {"price": None, "url": None}
 
-        found_any = False
         for seller, lang_prices in seller_results.items():
-            valid_prices = [p for p in lang_prices.values() if p is not None]
+            valid_prices = [p for p in lang_prices.values() if p["price"] is not None]
             if valid_prices:
-                all_prices[seller] = min(valid_prices)
-                found_any = True
+                # pick the entry with the lowest price
+                all_prices[seller] = min(valid_prices, key=lambda x: x["price"])
             else:
-                all_prices[seller] = None
+                all_prices[seller] = {"price": None, "url": None}
 
-        result = all_prices if found_any else None
+        # ✅ Always return a dict, never None
+        result = all_prices
 
         with self.cache_lock:
             self.cache[cache_key] = result

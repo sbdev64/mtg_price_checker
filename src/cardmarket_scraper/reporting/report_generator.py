@@ -17,6 +17,29 @@ def generate_seller_summary(results, sellers):
     return seller_summary
 
 
+def _render_price_cell(price_data, seller, best_seller):
+    """
+    Render a single price cell for the HTML table.
+    Supports both dict (new format) and float (old format).
+    """
+    if isinstance(price_data, dict) and price_data.get("price") is not None:
+        price = price_data["price"]
+        url = price_data.get("url")
+        css_class = "price-cell lowest-price" if seller == best_seller else "price-cell"
+        if url:
+            return f"<td class='{css_class}'><a href='{url}' target='_blank'>{price:.2f} €</a></td>"
+        else:
+            return f"<td class='{css_class}'>{price:.2f} €</td>"
+
+    elif isinstance(price_data, (int, float)):
+        price = price_data
+        css_class = "price-cell lowest-price" if seller == best_seller else "price-cell"
+        return f"<td class='{css_class}'>{price:.2f} €</td>"
+
+    else:
+        return "<td class='price-cell not-found'>-</td>"
+
+
 def save_html_output(
     filename,
     decklist_results,
@@ -58,6 +81,8 @@ def save_html_output(
         ".price-cell { text-align: center; }",
         ".summary-table { margin-top: 1em; }",
         ".card-list { font-size: 0.9em; max-width: 300px; }",
+        "a { text-decoration: none; color: inherit; }",
+        "a:hover { text-decoration: underline; }",
         "</style>",
         "</head>",
         "<body>",
@@ -79,16 +104,8 @@ def save_html_output(
             html.append(f"<td>{row['index']}</td>")
             html.append(f"<td>{row['card']}</td>")
             for seller in sellers:
-                price = row["prices"].get(seller)
-                if price is not None:
-                    css_class = (
-                        "price-cell lowest-price"
-                        if seller == row["best_seller"]
-                        else "price-cell"
-                    )
-                    html.append(f"<td class='{css_class}'>{price:.2f} €</td>")
-                else:
-                    html.append("<td class='price-cell not-found'>-</td>")
+                price_data = row["prices"].get(seller)
+                html.append(_render_price_cell(price_data, seller, row["best_seller"]))
             html.append("</tr>")
         html.append("</table>")
         html.append(f"<p><b>Total cards in decklist:</b> {len(decklist_results)}</p>")
@@ -105,16 +122,8 @@ def save_html_output(
             html.append(f"<td>{row['index']}</td>")
             html.append(f"<td>{row['card']}</td>")
             for seller in sellers:
-                price = row["prices"].get(seller)
-                if price is not None:
-                    css_class = (
-                        "price-cell lowest-price"
-                        if seller == row["best_seller"]
-                        else "price-cell"
-                    )
-                    html.append(f"<td class='{css_class}'>{price:.2f} €</td>")
-                else:
-                    html.append("<td class='price-cell not-found'>-</td>")
+                price_data = row["prices"].get(seller)
+                html.append(_render_price_cell(price_data, seller, row["best_seller"]))
             html.append("</tr>")
         html.append("</table>")
         html.append(f"<p><b>Total cards in expansion:</b> {len(expansion_results)}</p>")
