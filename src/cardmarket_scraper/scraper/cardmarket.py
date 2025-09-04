@@ -170,28 +170,38 @@ class CardMarketScraper:
             except TimeoutException:
                 pass
 
-            # Wait for table
+            # Wait for offers table
             try:
                 WebDriverWait(driver, 3).until(
                     EC.presence_of_element_located((By.CLASS_NAME, "table-body"))
                 )
                 time.sleep(0.5)
 
-                price_elements = driver.find_elements(
-                    By.CSS_SELECTOR,
-                    "span.color-primary.small.text-end.text-nowrap.fw-bold",
-                )
+                rows = driver.find_elements(By.CSS_SELECTOR, "div.table-body div.article-row")
 
                 lowest_price = float("inf")
-                for price_element in price_elements:
+                for row in rows:
                     try:
-                        price = float(
-                            price_element.text.replace("€", "")
-                            .replace(",", ".")
-                            .strip()
+                        # Extract card name
+                        name_el = row.find_element(By.CSS_SELECTOR, "div.col-seller a")
+                        card_name_text = name_el.text.strip()
+
+                        # Skip Art Series cards
+                        if card_name_text.startswith("Art Series:"):
+                            continue
+
+                        # Extract price
+                        price_el = row.find_element(
+                            By.CSS_SELECTOR,
+                            "span.color-primary.small.text-end.text-nowrap.fw-bold",
                         )
+                        price = float(
+                            price_el.text.replace("€", "").replace(",", ".").strip()
+                        )
+
                         lowest_price = min(lowest_price, price)
-                    except (ValueError, AttributeError):
+
+                    except Exception:
                         continue
 
                 return (lowest_price, url) if lowest_price != float("inf") else (None, None)

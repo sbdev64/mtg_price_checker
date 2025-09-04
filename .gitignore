@@ -30,3 +30,9 @@ Thumbs.db
 # Project-specific
 decks/
 cardmarket_cache.pkl
+
+# Ignore all .txt files (decklists) by default
+*.txt
+
+# But allow example decklists if placed in examples/ folder
+!examples/*.txt
